@@ -16,6 +16,7 @@ from tensorflow.keras.layers import LSTM, Dense, Reshape
 from tensorflow.keras.models import Sequential, load_model
 from tensorflow.keras.models import save_model
 from tensorflow.keras.optimizers import Adam
+from sklearn.preprocessing import MinMaxScaler
 
 SEMILLA = 42
 
@@ -28,21 +29,30 @@ ruta_saved_models = os.path.join(".", "saved_models")
 
 
 class RNNModel:
-    def __init__(self, input_steps, output_steps, x_train, y_train, x_test, y_test, scaler_output):
+    def __init__(self, x_train=None, y_train=None, x_test=None, y_test=None):
+        self.scaler_input = MinMaxScaler()
+        self.scaler_output = MinMaxScaler()
+        self.input_steps = 18
+        self.output_steps = 6
+        self.input_steps_categoria = 90
+        self.output_steps_categoria = 30
+        self.best_model = None
         self.best_trial_value = None
-        self.input_steps = input_steps
-        self.output_steps = output_steps
-        self.scaler_output = scaler_output
+        self.n_features = None
         self.x_train = x_train
         self.y_train = y_train
         self.x_test = x_test
         self.y_test = y_test
-
+        self.output_column_names = None
+        self.input_steps_categoria = 90
+        self.output_steps_categoria = 30
+        self.fitxerModel = os.path.join("..", "model", "model.h5")
+        self.input_file = os.path.join(".", "..", "dades", "Dades_Per_entrenar.csv")
         self.hyperparameter_ranges = {
             "n_layers": [1, 3],
-            "num_units_layer": [16, 64],
+            "num_units_layer": [1, 2],
             "lr": [1e-4, 1e-2],
-            "n_epochs": [10, 100],
+            "n_epochs": [1, 3],
             "batch_size": [16, 64]
         }
 
@@ -88,8 +98,10 @@ class RNNModel:
 
         model = self.create_model(n_layers, num_units_layer, lr)
 
+        # Entrenar el modelo
+
         early_stopping = EarlyStopping(monitor='val_loss', patience=5, restore_best_weights=True)
-        history = model.fit(self.x_train, self.y_train, epochs=n_epochs, batch_size=batch_size, verbose=0,
+        history = model.fit(self.x_train, self.y_train, epochs=n_epochs, batch_size=batch_size, verbose=1,
                             validation_data=(self.x_test, self.y_test), callbacks=[early_stopping])
 
         # Evaluar el modelo en el conjunto de prueba
@@ -99,6 +111,8 @@ class RNNModel:
 
         # Comprobar si este modelo es el mejor hasta ahora y, de ser así, guardarlo
         if self.best_trial_value is None or weighted_mae < self.best_trial_value:
+            study = None
+            self.guardar_model(model, study, self.input_file)
             self.best_trial_value = weighted_mae
             self.best_model = model
 
@@ -143,8 +157,10 @@ class RNNModel:
 
         return study.best_params, study
 
-    def predict(self, model, input_sequence):
+    def predict(self, model=None, input_sequence=None):
         # Realizar la predicción utilizando el modelo entrenado
+        if model is None:
+            model = load_model(self.fitxerModel)
         y_pred = model.predict(input_sequence)
 
         n_points = y_pred.shape[1] * y_pred.shape[2]
@@ -167,11 +183,14 @@ class RNNModel:
 
         return y_pred_inv
 
-    def predict_last_rows(self):
+    def predict_last_rows(self, model=None, data=None):
         """Ejecutar la predicción del mejor modelo con un fichero y seleccionar las últimas filas."""
 
         # Cargar los datos del fichero
-        data_copiada = self.data.copy()
+        if data is None:
+            data = self.data.copy()
+
+        data_copiada = data.copy()
         data_copiada = data_copiada.dropna()
 
         data_limitat = data_copiada.tail(self.input_steps_categoria)
@@ -182,7 +201,9 @@ class RNNModel:
 
         n_features = x_prediccio.shape[2]
 
-        y_pred = self.predict(self.best_model, x_prediccio)
+        if model is None:
+            model = self.best_model
+        y_pred = self.predict(model, x_prediccio)
 
         # Organizar y guardar la predicción en un archivo
         column_names = ['Index'] + [f'Column_{i}' for i in range(1, 4)]
@@ -195,7 +216,7 @@ class RNNModel:
         output_df.to_excel(output_file, index=False)
         print(f"Predicción guardada en el archivo: {output_file}")
 
-    def search_and_train_with_optuna(self, n_searches, n_trials_per_search, model_save_path):
+    def search_and_train_with_optuna(self, n_searches, n_trials_per_search):
         """
         Realiza la búsqueda de los mejores modelos utilizando Optuna y entrena el mejor modelo.
         Guarda el modelo y repite el proceso n_searches veces.
@@ -206,6 +227,10 @@ class RNNModel:
         """
         study = None  # Inicializar el objeto de estudio como None
         best_params = None  # Inicializar los mejores parámetros como None
+        model_save_path = os.path.join(".", "..", "save_models")
+        if not os.path.exists(model_save_path):
+            os.makedirs(model_save_path)
+
         for i in range(n_searches):
             print(f"\nBúsqueda y entrenamiento {i + 1} de {n_searches}")
 
@@ -216,43 +241,48 @@ class RNNModel:
             )
             print(f"Mejores hiperparámetros encontrados: {best_params}")
 
+
+
             # Guardar el mejor modelo
             save_path = os.path.join(model_save_path, f"best_model_{i + 1}.h5")
-            self.save_model(self.best_model, study, self.input_file)
+            self.guardar_model(self.best_model, study, self.input_file)
             print(f"Modelo guardado en {save_path}")
 
     def guardar_model(self, model_save, study, csv_path):
-        """
-        Guardar el modelo entrenado en una carpeta con el nombre de la fecha y hora actual.
-        """
-        # Obtener la fecha y hora actual con el formato especificado
-        fecha_hora = datetime.datetime.now().strftime('%d%m%Y__%H_%M')
+        # Obtenir la data i hora actual amb el format especificat
+        data_hora = datetime.datetime.now().strftime('%d%m%Y__%H_%M')
 
-        # Crear la subcarpeta con el nombre de la fecha y hora
-        subcarpeta = os.path.join("saved_models", fecha_hora)
+        # Crear la subcarpeta amb el nom de la data i hora
+        model_save_path = os.path.join(".", "..", "save_models")
+        if not os.path.exists(model_save_path):
+            os.makedirs(model_save_path)
+
+        subcarpeta = os.path.join(os.path.join(model_save_path, data_hora))
         os.makedirs(subcarpeta, exist_ok=True)
 
-        # Guardar el modelo en un archivo .h5
+        # Guardar el model en un fitxer .h5
         model_path = os.path.join(subcarpeta, "model.h5")
-        model_save.save(model_path)
+        save_model(model_save, model_path)
 
-        # Extraer los hiperparámetros del modelo
-        hiperparametros = model_save.get_config()
+        # Extreure els hiperparàmetres del model
+        hiperparametres = model_save.get_config()
 
-        # Guardar los hiperparámetros en un archivo .pkl
-        hiperparametros_path = os.path.join(subcarpeta, "hiperparametros.pkl")
+        # Guardar els hiperparàmetres en un fitxer .pkl
+        hiperparametres_path = os.path.join(subcarpeta, "hiperparametres.pkl")
 
-        # Guardar el archivo CSV con los resultados del estudio
-        study_path = os.path.join(subcarpeta, "study.csv")
-        study.trials_dataframe().to_csv(study_path)
-        print(study.best_value)
-        print(study.best_params)
-        print(study.best_trial)
+        # Guardar el fitxer CSV amb els resultats de l'estudi
+        if study:
+            study_path = os.path.join(subcarpeta, "study.csv")
+            study.trials_dataframe().to_csv(study_path)
+            print(study.best_value)
+            print(study.best_params)
+            print(study.best_trial)
 
-        with open(hiperparametros_path, 'wb') as f:
-            pickle.dump(hiperparametros, f)
+        with open(hiperparametres_path, 'wb') as f:
+            pickle.dump(hiperparametres, f)
 
-        # Copiar el archivo CSV a la subcarpeta
+        # Copiar el fitxer CSV a la subcarpeta
         shutil.copy2(csv_path, subcarpeta)
+
 
 
