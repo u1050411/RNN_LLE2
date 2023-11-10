@@ -16,7 +16,7 @@ class Opciones:
         self.hiperparametros = ''
         self.modelo = ''
         self.directorio = ''
-        self.model_sql = SQLModel()
+        # self.model_sql = SQLModel()
         self.input_steps_categoria = 90
         self.output_steps_categoria = 30
 
@@ -148,5 +148,5 @@ if __name__ == '__main__':
     # model = opciones.utilizar_optuna(n_trials=2)
     # data_proces = DataPreprocessing()
     # opciones.predict_last_rows(data_proces, model)
-    opciones.optuna_iterativo(n_busquedas=2, n_pruebas_por_busqueda=2)
+    opciones.optuna_iterativo(n_busquedas=1000, n_pruebas_por_busqueda=1000)
 
